@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 7, 4),
+	"version": (0, 7, 5),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -51,17 +51,19 @@ class VF_SegmentMesh(bpy.types.Operator):
 		bounds = True if context.scene.vf_segment_mesh_settings.tile_bounds == "OUT" else False
 		attribute_name = "island_position"
 		
+		# Apply all transforms (otherwise world-space calculations are going to be all off)
+		bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+		
+		# Get active object by name instead of by active reference (so the source object doesn't change during processing)
+		object_name = str(context.active_object.name)
+		mesh_object = bpy.data.objects[object_name]
+		
 		# Calculate island positions if we're not in per-polygon mode
 		if segment != "POLY":
 			obj = context.active_object
 			if obj and obj.type == 'MESH':
 				# Call the function to mark polygon islands
 				vf_store_polygon_islands(obj)
-				
-		# Get active object by name (so the source object doesn't change during processing)
-		# This seems VERY silly, I just can't remember how to create a reference to the active object without it changing when the active object changes?
-		object_name = str(context.active_object.name)
-		mesh_object = bpy.data.objects[object_name]
 		
 		# Save current 3D cursor location and pivot point
 		original_cursor = context.scene.cursor.matrix
@@ -160,8 +162,6 @@ class VF_SegmentMesh(bpy.types.Operator):
 							selectable_objects=[separated_object],
 							selected_editable_objects=[separated_object],
 							selected_objects=[separated_object]):
-						
-						bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 						
 						if origin == "TILE":
 							context.scene.cursor.matrix = Matrix(((1.0, 0.0, 0.0, loc_x),(0.0, 1.0, 0.0, loc_y),(-0.0, 0.0, 1.0, 0.0),(0.0, 0.0, 0.0, 1.0)))
@@ -381,7 +381,7 @@ def vf_segment_mesh_preview(self, context):
 
 class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 	tile_size: bpy.props.FloatVectorProperty(
-		name='Tile',
+		name='Size',
 		description='Size of each X/Y tile',
 		subtype='XYZ_LENGTH',
 		size=2,
@@ -428,7 +428,8 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		name = 'Origin',
 		description = 'Choose the desired origin for each tile',
 		items = [
-			('SOURCE', 'Source', 'Maintains the origin from the source object (not ideal in cases where culling algorithms take origin into account)'),
+			# Source is a bit of a problem, since we need to apply all transforms before processing world-space tiles; the original orientation of the object needs to be saved first, which isn't implemented yet
+#			('SOURCE', 'Source', 'Maintains the origin from the source object (not ideal in cases where culling algorithms take origin into account)'),
 			('TILE', 'Tile', 'Set each tile origin to the centre of the tile space (best for predictable placement but may not be as ideal for transparency sorting in some cases)'),
 			('BOX', 'Bounding Box', 'Set each tile origin to the geometry bounding box'),
 			('MEDIAN', 'Median', 'Set each tile origin to the geometry median'),
