@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 6, 5),
+	"version": (0, 6, 6),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -51,9 +51,13 @@ class VF_SegmentMesh(bpy.types.Operator):
 		# Get active object by name (so the source object doesn't change during processing)
 		# This seems VERY silly, I just can't remember how to create a reference to the active object without it changing when the active object changes?
 		object_name = str(context.active_object.name)
+		mesh_object = bpy.data.objects[object_name]
 		
 		# Save current 3D cursor location
 		original_cursor = context.scene.cursor.matrix
+		
+		# Track names of each created object
+		separated_collection = []
 		
 		# Loop through each grid space
 		for x in range(countX):
@@ -78,8 +82,6 @@ class VF_SegmentMesh(bpy.types.Operator):
 					elif y == countY-1:
 						max_y = float('inf')
 				
-				# Get source object by name
-				mesh_object = bpy.data.objects[object_name]
 				# Prevent out-of-range errors (seems like the attribute indices aren't updated after splitting geometry)
 				mesh_object.data.update()
 				# Re-get the mesh data to ensure everything is up-to-date
@@ -134,6 +136,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 					separated_mesh = separated_object.data
 					separated_mesh.name = tile_name
 					separated_object.select_set(False)
+					separated_collection.append(tile_name)
 					
 					# Apply transforms, set the origin, and set the position of the separated object
 					with context.temp_override(
@@ -146,6 +149,15 @@ class VF_SegmentMesh(bpy.types.Operator):
 						bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 						context.scene.cursor.matrix = Matrix(((1.0, 0.0, 0.0, loc_x),(0.0, 1.0, 0.0, loc_y),(-0.0, 0.0, 1.0, 0.0),(0.0, 0.0, 0.0, 1.0)))
 						bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
+		
+		# Select all newly created segments
+		for name in separated_collection:
+			bpy.data.objects[name].select_set(True)
+		
+		# If no elements remain in the original source, remove it and set the first tile to active
+		if len(mesh_object.data.vertices) == 0:
+			bpy.data.meshes.remove(mesh_object.data)
+			bpy.context.view_layer.objects.active = bpy.data.objects[separated_collection[0]]
 		
 		# Restore original 3D cursor position
 		context.scene.cursor.matrix = original_cursor
@@ -256,19 +268,14 @@ def vf_store_polygon_islands(obj):
 @persistent
 def vf_segment_mesh_preview(self, context):
 	mesh_name = "VF-SegmentMeshPreview-TEMP"
-#				vf_segment_mesh_preview_temp
 	
 	# Remove existing mesh data block (and associated object) if it exists
 	if mesh_name in bpy.data.meshes:
-#	if bpy.data.meshes.get(mesh_name):
-		mesh = bpy.data.meshes[mesh_name]
-		bpy.data.meshes.remove(mesh)
 		bpy.data.meshes.remove(bpy.data.meshes[mesh_name])
 	
 	# Stop now if the preview mesh is disabled
 	if not context.scene.vf_segment_mesh_settings.show_preview:
 		# Done
-#		return {'FINISHED'}
 		return None
 	
 	# Set up local variables
@@ -317,7 +324,6 @@ def vf_segment_mesh_preview(self, context):
 			obj.select_set(True)
 	
 	# Done
-#	return {'FINISHED'}
 	return None
 
 
