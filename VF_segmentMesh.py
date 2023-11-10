@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 6, 0),
+	"version": (0, 6, 5),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -11,8 +11,9 @@ bl_info = {
 	"category": "3D View"}
 
 import bpy
-from mathutils import Vector
 import bmesh
+from mathutils import Vector
+from mathutils import Matrix
 from bpy.app.handlers import persistent
 
 ###########################################################################
@@ -29,33 +30,37 @@ class VF_SegmentMesh(bpy.types.Operator):
 		bpy.ops.object.mode_set(mode='OBJECT')
 		
 		# Set up local variables
-		sizeX = bpy.context.scene.vf_segment_mesh_settings.tile_size[0]
-		sizeY = bpy.context.scene.vf_segment_mesh_settings.tile_size[1]
-		countX = bpy.context.scene.vf_segment_mesh_settings.tile_count[0]
-		countY = bpy.context.scene.vf_segment_mesh_settings.tile_count[1]
+		sizeX = context.scene.vf_segment_mesh_settings.tile_size[0]
+		sizeY = context.scene.vf_segment_mesh_settings.tile_size[1]
+		countX = context.scene.vf_segment_mesh_settings.tile_count[0]
+		countY = context.scene.vf_segment_mesh_settings.tile_count[1]
 		startX = sizeX * float(countX) * -0.5
 		startY = sizeY * float(countY) * -0.5
-		group = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment != "POLY" else False
-		weighted = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment == "WEIGHT" else False
-		bounds = bpy.context.scene.vf_segment_mesh_settings.tile_bounds
+		group = True if context.scene.vf_segment_mesh_settings.tile_segment != "POLY" else False
+		weighted = True if context.scene.vf_segment_mesh_settings.tile_segment == "WEIGHT" else False
+		bounds = context.scene.vf_segment_mesh_settings.tile_bounds
 		attribute_name = "island_position"
 		
 		# Calculate island positions if we're not in per-polygon mode
 		if group:
-			obj = bpy.context.active_object
+			obj = context.active_object
 			if obj and obj.type == 'MESH':
 				# Call the function to mark polygon islands
 				vf_store_polygon_islands(obj)
 				
 		# Get active object by name (so the source object doesn't change during processing)
 		# This seems VERY silly, I just can't remember how to create a reference to the active object without it changing when the active object changes?
-		object_name = str(bpy.context.active_object.name)
+		object_name = str(context.active_object.name)
+		
+		# Save current 3D cursor location
+		original_cursor = context.scene.cursor.matrix
 		
 		# Loop through each grid space
 		for x in range(countX):
 			# Define min/max for X
 			min_x = startX + (x * sizeX)
 			max_x = min_x + sizeX
+			loc_x = (max_x + min_x) / 2
 			if bounds:
 				if x == 0:
 					min_x = float('-inf')
@@ -66,6 +71,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Define min/max for Y
 				min_y = startY + (y * sizeY)
 				max_y = min_y + sizeY
+				loc_y = (max_y + min_y) / 2
 				if bounds:
 					if y == 0:
 						min_y = float('-inf')
@@ -116,18 +122,33 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Only create a new segment if there are 1 or more polygons selected
 				if count > 0:
 					# Separate selected polygons into a new object
-					bpy.context.view_layer.objects.active = mesh_object
+					context.view_layer.objects.active = mesh_object
 					mesh_object.select_set(True)
 					bpy.ops.object.mode_set(mode='EDIT')
 					bpy.ops.mesh.separate(type='SELECTED')
 					bpy.ops.object.mode_set(mode='OBJECT')
 					
 					# Rename the separated object and mesh
-					separated_object = bpy.context.selected_objects[1]
+					separated_object = context.selected_objects[1]
 					separated_object.name = tile_name
 					separated_mesh = separated_object.data
 					separated_mesh.name = tile_name
 					separated_object.select_set(False)
+					
+					# Apply transforms, set the origin, and set the position of the separated object
+					with context.temp_override(
+							active_object=separated_object,
+							editable_objects=[separated_object],
+							object=separated_object,
+							selectable_objects=[separated_object],
+							selected_editable_objects=[separated_object],
+							selected_objects=[separated_object]):
+						bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+						context.scene.cursor.matrix = Matrix(((1.0, 0.0, 0.0, loc_x),(0.0, 1.0, 0.0, loc_y),(-0.0, 0.0, 1.0, 0.0),(0.0, 0.0, 0.0, 1.0)))
+						bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
+		
+		# Restore original 3D cursor position
+		context.scene.cursor.matrix = original_cursor
 		
 		# Done
 		return {'FINISHED'}
@@ -245,20 +266,20 @@ def vf_segment_mesh_preview(self, context):
 		bpy.data.meshes.remove(bpy.data.meshes[mesh_name])
 	
 	# Stop now if the preview mesh is disabled
-	if not bpy.context.scene.vf_segment_mesh_settings.show_preview:
+	if not context.scene.vf_segment_mesh_settings.show_preview:
 		# Done
 #		return {'FINISHED'}
 		return None
 	
 	# Set up local variables
-	sizeX = bpy.context.scene.vf_segment_mesh_settings.tile_size[0]
-	sizeY = bpy.context.scene.vf_segment_mesh_settings.tile_size[1]
-	countX = bpy.context.scene.vf_segment_mesh_settings.tile_count[0]
-	countY = bpy.context.scene.vf_segment_mesh_settings.tile_count[1]
+	sizeX = context.scene.vf_segment_mesh_settings.tile_size[0]
+	sizeY = context.scene.vf_segment_mesh_settings.tile_size[1]
+	countX = context.scene.vf_segment_mesh_settings.tile_count[0]
+	countY = context.scene.vf_segment_mesh_settings.tile_count[1]
 	
 	# Save the current object selection
-	active_object_name = str(bpy.context.active_object.name) if bpy.context.active_object else False
-	selected_objects = [obj for obj in bpy.context.selected_objects]
+	active_object_name = str(context.active_object.name) if context.active_object else False
+	selected_objects = [obj for obj in context.selected_objects]
 	
 	# Create primitive grid
 	bpy.ops.mesh.primitive_grid_add(
@@ -272,23 +293,23 @@ def vf_segment_mesh_preview(self, context):
 		scale=(sizeX * countX, sizeY * countY, 1.0))
 	
 	# Set scale
-	bpy.context.active_object.scale = (sizeX * countX, sizeY * countY, 1.0)
+	context.active_object.scale = (sizeX * countX, sizeY * countY, 1.0)
 	bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 	
 	# Convert to wireframe and disable for rendering
 	bpy.ops.object.modifier_add(type='WIREFRAME')
-	bpy.context.object.modifiers["Wireframe"].thickness = float(max(sizeX, sizeY)) * 0.05
+	context.object.modifiers["Wireframe"].thickness = float(max(sizeX, sizeY)) * 0.05
 #	bpy.ops.object.modifier_apply()
-	bpy.context.object.hide_render = True
+	context.object.hide_render = True
 		
 	# Rename object and mesh data block
-	bpy.context.active_object.name = mesh_name
-	bpy.context.active_object.data.name = mesh_name
+	context.active_object.name = mesh_name
+	context.active_object.data.name = mesh_name
 	
 	# Reset selection
-	bpy.context.active_object.select_set(False)
+	context.active_object.select_set(False)
 	if active_object_name:
-		bpy.context.view_layer.objects.active = bpy.data.objects[active_object_name]
+		context.view_layer.objects.active = bpy.data.objects[active_object_name]
 	# If one or more objects were originally selected, restore that selection set
 	if len(selected_objects) >= 1:
 		# Re-select previously selected objects
