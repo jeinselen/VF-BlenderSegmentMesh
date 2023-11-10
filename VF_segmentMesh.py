@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 5, 0),
+	"version": (0, 6, 0),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -25,6 +25,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 	bl_options = {'REGISTER', 'UNDO'}
 	
 	def execute(self, context):
+		# Ensure mode is set to object
+		bpy.ops.object.mode_set(mode='OBJECT')
+		
 		# Set up local variables
 		sizeX = bpy.context.scene.vf_segment_mesh_settings.tile_size[0]
 		sizeY = bpy.context.scene.vf_segment_mesh_settings.tile_size[1]
@@ -33,94 +36,20 @@ class VF_SegmentMesh(bpy.types.Operator):
 		startX = sizeX * float(countX) * -0.5
 		startY = sizeY * float(countY) * -0.5
 		group = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment != "POLY" else False
-		vert = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment == "VERT" else False
+		weighted = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment == "WEIGHT" else False
 		bounds = bpy.context.scene.vf_segment_mesh_settings.tile_bounds
 		attribute_name = "island_position"
 		
+		# Calculate island positions if we're not in per-polygon mode
+		if group:
+			obj = bpy.context.active_object
+			if obj and obj.type == 'MESH':
+				# Call the function to mark polygon islands
+				vf_store_polygon_islands(obj)
+				
 		# Get active object by name (so the source object doesn't change during processing)
 		# This seems VERY silly, I just can't remember how to create a reference to the active object without it changing when the active object changes?
 		object_name = str(bpy.context.active_object.name)
-		mesh_object = bpy.data.objects[object_name]
-		mesh_data = mesh_object.data
-		
-		# Calculate island positions if we're not in per-polygon mode
-		if group:
-			# Convert the mesh to a BMesh for easier manipulation
-			bm = bmesh.new()
-			bm.from_mesh(mesh_data)
-			
-			# Create a custom vector polygon attribute to store the bounding box centers
-			attr = bm.faces.layers.float_vector.new(attribute_name)
-			
-			# Set vectors to infinity so we can track which elements have been processed
-			unset_value = Vector((float('-inf'), float('-inf'), float('-inf')))
-			for face in bm.faces:
-				face[attr] = unset_value
-				face.select_set(False)
-			
-			# Iterate through polygons to find mesh islands
-			for face in bm.faces:
-				# Check if the custom attribute already exists on the current polygon
-				if face[attr] != unset_value:
-#					print("attr exists")
-					# If the attribute exists, skip to the next polygon
-					continue
-				
-				# Select the current face
-				face.select_set(True)
-				
-				# Expand the selection to linked polygons
-#				bpy.ops.mesh.select_linked(delimit=set())
-				# BUT THIS IS FOR THE ORIGINAL MESH, NOT BMESH!
-				
-				bmesh.ops.region_extend(bm, use_faces=True, use_face_step=False)
-				
-				# Get the selected polygons
-				selected_polygons = [poly for poly in bm.faces if poly.select]
-				
-				print("selected_polygons: " + len(selected_polygons))
-				
-				# Corrected?
-#				selected_polygons = [poly for poly in bpy.context.active_object.data.polygons if poly.select]
-				
-#				print(dir(bm.faces))
-				
-				# Calculate selected mesh island position, either average vertex or bounding box
-				if vert:
-					# Calculate average vertex center
-					vertices = [v.co for poly in selected_polygons for v in poly.verts]
-					bounding_box_center = sum(vertices, Vector()) / len(vertices)
-				else:
-					# Calculate bounding box minimmum and maximum extents
-					min_coords = Vector((float('inf'), float('inf'), float('inf')))
-					max_coords = Vector((-float('inf'), -float('inf'), -float('inf')))
-					for poly in selected_polygons:
-#						print(dir(poly))
-						for vert in poly.verts:
-							min_coords.x = min(min_coords.x, vert.co.x)
-							min_coords.y = min(min_coords.y, vert.co.y)
-							min_coords.z = min(min_coords.z, vert.co.z)
-							max_coords.x = max(max_coords.x, vert.co.x)
-							max_coords.y = max(max_coords.y, vert.co.y)
-							max_coords.z = max(max_coords.z, vert.co.z)
-					# Calculate bounding box center
-					bounding_box_center = (min_coords + max_coords) / 2
-				
-				# Mark the selected polygons as processed by storing the mesh island center point
-				for poly in bm.faces:
-					if poly.select:
-						poly[attr] = bounding_box_center
-			
-			# Update the mesh with the changes from the BMesh
-			bm.to_mesh(mesh_data)
-			bm.free()
-		
-#			if attribute_name in mesh_data.polygons.layers.float_vector:
-			if attribute_name in mesh_data.attributes:
-				attribute_layer = mesh_data.attributes[attribute_name]
-			else:
-				attribute_layer = False
-				print("VF Segment Mesh - failed to calculate and store mesh island positions")
 		
 		# Loop through each grid space
 		for x in range(countX):
@@ -128,9 +57,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 			min_x = startX + (x * sizeX)
 			max_x = min_x + sizeX
 			if bounds:
-				if y == 0:
+				if x == 0:
 					min_x = float('-inf')
-				elif y == countY-1:
+				elif x == countY-1:
 					max_x = float('inf')
 			
 			for y in range(countY):
@@ -143,6 +72,19 @@ class VF_SegmentMesh(bpy.types.Operator):
 					elif y == countY-1:
 						max_y = float('inf')
 				
+				# Get source object by name
+				mesh_object = bpy.data.objects[object_name]
+				# Prevent out-of-range errors (seems like the attribute indices aren't updated after splitting geometry)
+				mesh_object.data.update()
+				# Re-get the mesh data to ensure everything is up-to-date
+				mesh_data = mesh_object.data
+				
+				# Get attribute data
+				if 'island_center' in mesh_data.attributes:
+					island_center = mesh_data.attributes['island_center']
+				if 'island_weighted' in mesh_data.attributes:
+					island_weighted = mesh_data.attributes['island_weighted']
+					
 				# Create tile name
 				tile_name = mesh_object.name + "-Tile-" + str(x) + "-" + str(y)
 				
@@ -151,9 +93,12 @@ class VF_SegmentMesh(bpy.types.Operator):
 				
 				# Select polygons within the specified XYZ area
 				for polygon in mesh_data.polygons:
-					if group and attribute_layer:
+					if group and island_center and island_weighted:
 						# Get precalculated island position
-						element_position = attribute_layer.data[polygon.index].vector
+						if weighted:
+							element_position = island_weighted.data[polygon.index].vector
+						else:
+							element_position = island_center.data[polygon.index].vector
 					else:
 						# Find average vertex location of individual polygon
 						element_position = Vector((0, 0, 0))
@@ -167,7 +112,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 						count += 1
 					else:
 						polygon.select = False
-						
+				
 				# Only create a new segment if there are 1 or more polygons selected
 				if count > 0:
 					# Separate selected polygons into a new object
@@ -187,8 +132,108 @@ class VF_SegmentMesh(bpy.types.Operator):
 		# Done
 		return {'FINISHED'}
 
+
+
 @persistent
-def VF_SegmentMeshPreview(self, context):
+def vf_store_polygon_islands(obj):
+	mesh = obj.data
+	
+	# Create a BMesh object from the mesh
+	bm = bmesh.new()
+	bm.from_mesh(mesh)
+	bm.faces.ensure_lookup_table()
+	bm.verts.ensure_lookup_table()
+	
+	# Get or create custom face attributes
+	if 'island_index' in bm.faces.layers.int:
+		island_index = bm.faces.layers.int['island_index']
+	else:
+		island_index = bm.faces.layers.int.new('island_index')
+		
+	if 'island_center' in bm.faces.layers.float_vector:
+		island_center = bm.faces.layers.float_vector['island_center']
+	else:
+		island_center = bm.faces.layers.float_vector.new('island_center')
+		
+#   if 'island_bounds' in bm.faces.layers.float_vector:
+#       island_bounds = bm.faces.layers.float_vector['island_bounds']
+#   else:
+#       island_bounds = bm.faces.layers.float_vector.new('island_bounds')
+		
+#   if 'island_median' in bm.faces.layers.float_vector:
+#       island_median = bm.faces.layers.float_vector['island_median']
+#   else:
+#       island_median = bm.faces.layers.float_vector.new('island_median')
+		
+	if 'island_weighted' in bm.faces.layers.float_vector:
+		island_weighted = bm.faces.layers.float_vector['island_weighted']
+	else:
+		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
+		
+	# Track current island index
+	track_index = 0
+	
+	# Iterate through all polygons in the BMesh
+	for poly in bm.faces:
+		if not poly.tag:
+			# Start a new island
+			island_polygons = set()
+			island_vertices = set()
+			stack = [poly]
+			
+			# Perform depth-first search to find connected polygons
+			while stack:
+				current_poly = stack.pop()
+				island_polygons.add(current_poly.index)
+				current_poly.tag = True
+				# Find adjacent polygons by checking neighboring edges
+				for edge in current_poly.edges:
+					for adjacent_poly in edge.link_faces:
+						if not adjacent_poly.tag:
+							stack.append(adjacent_poly)
+							
+			# Create island positional data
+			# Get current island bounding box centre point
+			position_box_min = Vector((float("inf"), float("inf"), float("inf")))
+			position_box_max = Vector((float("-inf"), float("-inf"), float("-inf")))
+			for p in island_polygons:
+				for v in bm.faces[p].verts:
+					vertex_position = bm.verts[v.index].co
+					position_box_min.x = min(position_box_min.x, vertex_position.x)
+					position_box_min.y = min(position_box_min.y, vertex_position.y)
+					position_box_min.z = min(position_box_min.z, vertex_position.z)
+					position_box_max.x = max(position_box_max.x, vertex_position.x)
+					position_box_max.y = max(position_box_max.y, vertex_position.y)
+					position_box_max.z = max(position_box_max.z, vertex_position.z)
+					
+			# Get current island weighted polygon position average
+#           position_bounds = sum((f.calc_center_bounds() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+					
+			# Get current island weighted polygon position average
+#           position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+					
+			# Get current island weighted polygon position average
+			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+			
+			# Assign island data to the polygons
+			for island_poly_index in island_polygons:
+				bm.faces[island_poly_index][island_index] = track_index
+				bm.faces[island_poly_index][island_center] = (position_box_max + position_box_min) / 2
+#               bm.faces[island_poly_index][island_bounds] = position_bounds
+#               bm.faces[island_poly_index][island_median] = position_median
+				bm.faces[island_poly_index][island_weighted] = position_weighted
+				
+			track_index += 1
+			
+	# Finish up, write the bmesh back to the mesh
+	bm.to_mesh(mesh)
+	bm.free()  # free and prevent further access
+	obj.data.update() # This ensures the viewport updates
+
+
+
+@persistent
+def vf_segment_mesh_preview(self, context):
 	mesh_name = "VF-SegmentMeshPreview-TEMP"
 #				vf_segment_mesh_preview_temp
 	
@@ -271,7 +316,7 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		soft_max=1000.0,
 		min=0.0,
 		max=10000.0,
-		update=VF_SegmentMeshPreview)
+		update=vf_segment_mesh_preview)
 	tile_count: bpy.props.IntVectorProperty(
 		name="Count",
 		description="Number of X/Y tiles",
@@ -283,27 +328,26 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		soft_max=8,
 		min=1,
 		max=64,
-		update=VF_SegmentMeshPreview)
+		update=vf_segment_mesh_preview)
 	tile_segment: bpy.props.EnumProperty(
 		name = 'Segment',
 		description = 'Segment mesh by individual polygons or connected groups',
 		items = [
 			('POLY', 'Per Polygon', 'Segment mesh by individual polygons (cuts apart merged elements)'),
-			('VERT', 'Average Vertex', 'Segment mesh based on the vertex density of each contiguous polygon island (maintains merged elements)'),
-			('BOX', 'Bounding Box', 'Segment mesh based on the bounding box of each contiguous polygon island (maintains merged elements)')
+			('BOUNDS', 'Bounding Box', 'Segment mesh based on the bounding box center of each contiguous polygon island (maintains merged elements)'),
+			('WEIGHT', 'Median Weighted', 'Segment mesh based on the weighted median polygon position of each contiguous island (maintains merged elements)')
 #			('GROUP', 'Group', 'Segment mesh by connected groups (maintains merged elements)')
 			],
 		default = 'POLY')
 	tile_bounds: bpy.props.BoolProperty(
 		name="Include Edges",
 		description="Include elements outside the defined boundary edges",
-		default=False,
-		update=VF_SegmentMeshPreview)
+		default=False)
 	show_preview: bpy.props.BoolProperty(
 		name="Preview",
 		description="Enable preview grid mesh",
 		default=False,
-		update=VF_SegmentMeshPreview)
+		update=vf_segment_mesh_preview)
 
 class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 	bl_space_type = "VIEW_3D"
