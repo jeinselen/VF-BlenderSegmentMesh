@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 6, 6),
+	"version": (0, 7, 0),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -36,9 +36,10 @@ class VF_SegmentMesh(bpy.types.Operator):
 		countY = context.scene.vf_segment_mesh_settings.tile_count[1]
 		startX = sizeX * float(countX) * -0.5
 		startY = sizeY * float(countY) * -0.5
-		group = True if context.scene.vf_segment_mesh_settings.tile_segment != "POLY" else False
-		weighted = True if context.scene.vf_segment_mesh_settings.tile_segment == "WEIGHT" else False
-		bounds = context.scene.vf_segment_mesh_settings.tile_bounds
+		segment = context.scene.vf_segment_mesh_settings.tile_segment
+		group = True if segment != "POLY" else False
+		origin = context.scene.vf_segment_mesh_settings.tile_origin
+		bounds = True if context.scene.vf_segment_mesh_settings.tile_bounds == "OUT" else False
 		attribute_name = "island_position"
 		
 		# Calculate island positions if we're not in per-polygon mode
@@ -53,8 +54,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 		object_name = str(context.active_object.name)
 		mesh_object = bpy.data.objects[object_name]
 		
-		# Save current 3D cursor location
+		# Save current 3D cursor location and pivot point
 		original_cursor = context.scene.cursor.matrix
+		original_pivot = context.tool_settings.transform_pivot_point
 		
 		# Track names of each created object
 		separated_collection = []
@@ -88,11 +90,15 @@ class VF_SegmentMesh(bpy.types.Operator):
 				mesh_data = mesh_object.data
 				
 				# Get attribute data
-				if 'island_center' in mesh_data.attributes:
-					island_center = mesh_data.attributes['island_center']
-				if 'island_weighted' in mesh_data.attributes:
-					island_weighted = mesh_data.attributes['island_weighted']
-					
+				if 'island_box' in mesh_data.attributes:
+					island_box = mesh_data.attributes['island_box']
+				if 'island_poly' in mesh_data.attributes:
+					island_poly = mesh_data.attributes['island_poly']
+#				if 'island_median' in mesh_data.attributes:
+#					island_median = mesh_data.attributes['island_median']
+#				if 'island_weighted' in mesh_data.attributes:
+#					island_weighted = mesh_data.attributes['island_weighted']
+				
 				# Create tile name
 				tile_name = mesh_object.name + "-Tile-" + str(x) + "-" + str(y)
 				
@@ -101,12 +107,18 @@ class VF_SegmentMesh(bpy.types.Operator):
 				
 				# Select polygons within the specified XYZ area
 				for polygon in mesh_data.polygons:
-					if group and island_center and island_weighted:
+#					if group and island_box and island_poly and island_median and island_weighted:
+					if group and island_box and island_poly:
 						# Get precalculated island position
-						if weighted:
-							element_position = island_weighted.data[polygon.index].vector
-						else:
-							element_position = island_center.data[polygon.index].vector
+#						if segment == "WEIGHTED":
+#							element_position = island_weighted.data[polygon.index].vector
+#						elif segment == "MEDIAN":
+#							element_position = island_median.data[polygon.index].vector
+#						elif segment == "AVERAGE":
+						if segment == "AVERAGE":
+							element_position = island_poly.data[polygon.index].vector
+						else: # Default to "BOX"
+							element_position = island_box.data[polygon.index].vector
 					else:
 						# Find average vertex location of individual polygon
 						element_position = Vector((0, 0, 0))
@@ -146,9 +158,22 @@ class VF_SegmentMesh(bpy.types.Operator):
 							selectable_objects=[separated_object],
 							selected_editable_objects=[separated_object],
 							selected_objects=[separated_object]):
+						
 						bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-						context.scene.cursor.matrix = Matrix(((1.0, 0.0, 0.0, loc_x),(0.0, 1.0, 0.0, loc_y),(-0.0, 0.0, 1.0, 0.0),(0.0, 0.0, 0.0, 1.0)))
-						bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
+						
+						if origin == "TILE":
+							context.scene.cursor.matrix = Matrix(((1.0, 0.0, 0.0, loc_x),(0.0, 1.0, 0.0, loc_y),(-0.0, 0.0, 1.0, 0.0),(0.0, 0.0, 0.0, 1.0)))
+							bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
+						elif origin == "BOX":
+							context.tool_settings.transform_pivot_point = "BOUNDING_BOX_CENTER"
+							bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY')
+						elif origin == "MEDIAN":
+							context.tool_settings.transform_pivot_point = "MEDIAN_POINT"
+							bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY')
+						elif origin == "MASS":
+							bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_MASS')
+						elif origin == "VOLUME":
+							bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME')
 		
 		# Select all newly created segments
 		for name in separated_collection:
@@ -159,8 +184,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 			bpy.data.meshes.remove(mesh_object.data)
 			bpy.context.view_layer.objects.active = bpy.data.objects[separated_collection[0]]
 		
-		# Restore original 3D cursor position
+		# Restore original 3D cursor position and pivot point
 		context.scene.cursor.matrix = original_cursor
+		context.tool_settings.transform_pivot_point = original_pivot
 		
 		# Done
 		return {'FINISHED'}
@@ -182,27 +208,27 @@ def vf_store_polygon_islands(obj):
 		island_index = bm.faces.layers.int['island_index']
 	else:
 		island_index = bm.faces.layers.int.new('island_index')
-		
-	if 'island_center' in bm.faces.layers.float_vector:
-		island_center = bm.faces.layers.float_vector['island_center']
+	
+	if 'island_box' in bm.faces.layers.float_vector:
+		island_box = bm.faces.layers.float_vector['island_box']
 	else:
-		island_center = bm.faces.layers.float_vector.new('island_center')
-		
-#   if 'island_bounds' in bm.faces.layers.float_vector:
-#       island_bounds = bm.faces.layers.float_vector['island_bounds']
-#   else:
-#       island_bounds = bm.faces.layers.float_vector.new('island_bounds')
-		
-#   if 'island_median' in bm.faces.layers.float_vector:
-#       island_median = bm.faces.layers.float_vector['island_median']
-#   else:
-#       island_median = bm.faces.layers.float_vector.new('island_median')
-		
-	if 'island_weighted' in bm.faces.layers.float_vector:
-		island_weighted = bm.faces.layers.float_vector['island_weighted']
+		island_box = bm.faces.layers.float_vector.new('island_box')
+	
+	if 'island_poly' in bm.faces.layers.float_vector:
+		island_poly = bm.faces.layers.float_vector['island_poly']
 	else:
-		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
-		
+		island_poly = bm.faces.layers.float_vector.new('island_poly')
+	
+#	if 'island_median' in bm.faces.layers.float_vector:
+#		island_median = bm.faces.layers.float_vector['island_median']
+#	else:
+#		island_median = bm.faces.layers.float_vector.new('island_median')
+	
+#	if 'island_weighted' in bm.faces.layers.float_vector:
+#		island_weighted = bm.faces.layers.float_vector['island_weighted']
+#	else:
+#		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
+	
 	# Track current island index
 	track_index = 0
 	
@@ -238,29 +264,29 @@ def vf_store_polygon_islands(obj):
 					position_box_max.x = max(position_box_max.x, vertex_position.x)
 					position_box_max.y = max(position_box_max.y, vertex_position.y)
 					position_box_max.z = max(position_box_max.z, vertex_position.z)
-					
+			
 			# Get current island weighted polygon position average
-#           position_bounds = sum((f.calc_center_bounds() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
-					
+			position_poly = sum((f.calc_center_bounds() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+			
 			# Get current island weighted polygon position average
-#           position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
-					
+#			position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+			
 			# Get current island weighted polygon position average
-			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+#			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
 			
 			# Assign island data to the polygons
 			for island_poly_index in island_polygons:
 				bm.faces[island_poly_index][island_index] = track_index
-				bm.faces[island_poly_index][island_center] = (position_box_max + position_box_min) / 2
-#               bm.faces[island_poly_index][island_bounds] = position_bounds
-#               bm.faces[island_poly_index][island_median] = position_median
-				bm.faces[island_poly_index][island_weighted] = position_weighted
-				
-			track_index += 1
+				bm.faces[island_poly_index][island_box] = (position_box_max + position_box_min) / 2
+				bm.faces[island_poly_index][island_poly] = position_poly
+#				bm.faces[island_poly_index][island_median] = position_median
+#				bm.faces[island_poly_index][island_weighted] = position_weighted
 			
+			track_index += 1
+	
 	# Finish up, write the bmesh back to the mesh
 	bm.to_mesh(mesh)
-	bm.free()  # free and prevent further access
+	bm.free() # free and prevent further access
 	obj.data.update() # This ensures the viewport updates
 
 
@@ -356,20 +382,36 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		min=1,
 		max=64,
 		update=vf_segment_mesh_preview)
+	tile_bounds: bpy.props.EnumProperty(
+		name = 'Include',
+		description = 'Segment mesh by individual polygons or connected groups',
+		items = [
+			('IN', 'Inside Bounds', 'Limits tile content to only the elements that fall within the tile boundary'),
+			('OUT', 'Outside Edges', 'Includes content beyond the edges of the tile array, ensuring nothing is left out')
+			],
+		default = 'OUT')
 	tile_segment: bpy.props.EnumProperty(
 		name = 'Segment',
 		description = 'Segment mesh by individual polygons or connected groups',
 		items = [
 			('POLY', 'Per Polygon', 'Segment mesh by individual polygons (cuts apart merged elements)'),
-			('BOUNDS', 'Bounding Box', 'Segment mesh based on the bounding box center of each contiguous polygon island (maintains merged elements)'),
-			('WEIGHT', 'Median Weighted', 'Segment mesh based on the weighted median polygon position of each contiguous island (maintains merged elements)')
-#			('GROUP', 'Group', 'Segment mesh by connected groups (maintains merged elements)')
+			('BOX', 'Bounding Box', 'Segment mesh based on the bounding box of each contiguous polygon island (maintains merged elements)'),
+			('AVERAGE', 'Average Polygon', 'Segment mesh based on the average median polygon position of each contiguous island (maintains merged elements)')
+#			('MEDIAN', 'Average Median', 'Segment mesh based on the average median polygon position of each contiguous island (maintains merged elements)'),
+#			('WEIGHTED', 'Average Weighted Median', 'Segment mesh based on the average weighted median polygon position of each contiguous island (maintains merged elements)')
 			],
 		default = 'POLY')
-	tile_bounds: bpy.props.BoolProperty(
-		name="Include Edges",
-		description="Include elements outside the defined boundary edges",
-		default=False)
+	tile_origin: bpy.props.EnumProperty(
+		name = 'Origin',
+		description = 'Segment mesh by individual polygons or connected groups',
+		items = [
+			('TILE', 'Tile', 'Set each tile origin to the centre of the tile space (best for predictable placement, may not be ideal for transparency sorting in some cases)'),
+			('BOX', 'Bounding Box', 'Set each tile origin to the geometry bounding box'),
+			('MEDIAN', 'Median', 'Set each tile origin to the geometry median'),
+			('MASS', 'Mass', 'Set each tile origin to the geometry mass'),
+			('VOLUME', 'Volume', 'Set each tile origin to the geometry volume')
+			],
+		default = 'TILE')
 	show_preview: bpy.props.BoolProperty(
 		name="Preview",
 		description="Enable preview grid mesh",
@@ -414,8 +456,10 @@ class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 			
 			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_size')
 			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_count')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_segment')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_bounds')
+			col = layout.column(align=True)
+			col.prop(context.scene.vf_segment_mesh_settings, 'tile_bounds')
+			col.prop(context.scene.vf_segment_mesh_settings, 'tile_segment')
+			col.prop(context.scene.vf_segment_mesh_settings, 'tile_origin')
 			layout.prop(context.scene.vf_segment_mesh_settings, 'show_preview')
 						
 			if button_enable:
