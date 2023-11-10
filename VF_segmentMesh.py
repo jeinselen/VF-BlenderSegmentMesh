@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 4, 0),
+	"version": (0, 5, 0),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -12,9 +12,8 @@ bl_info = {
 
 import bpy
 from mathutils import Vector
-#import mathutils
 import bmesh
-#from bpy.app.handlers import persistent
+from bpy.app.handlers import persistent
 
 ###########################################################################
 # Main class
@@ -23,23 +22,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 	bl_idname = "object.vf_segment_mesh"
 	bl_label = "Segment Mesh"
 	bl_description = "Divide large meshes into grid-based components for more efficient rendering in realtime game engines"
-#	bl_options = {'REGISTER', 'UNDO'}
-	
-	def find_connected_elements(mesh, start_element_index, visited, min_x, min_y, max_x, max_y):
-		stack = [start_element_index]
-		connected_elements = set()
-		
-		while stack:
-			element_index = stack.pop()
-			if element_index not in visited:
-				visited.add(element_index)
-				connected_elements.add(element_index)
-				for neighbor in mesh.polygons[element_index].vertices:
-					for adjacent_element in mesh.vertices[neighbor].link_faces:
-						if adjacent_element.index not in visited and min_x <= adjacent_element.center.x <= max_x and min_y <= adjacent_element.center.y <= max_y:
-							stack.append(adjacent_element.index)
-							
-		return connected_elements
+	bl_options = {'REGISTER', 'UNDO'}
 	
 	def execute(self, context):
 		# Set up local variables
@@ -49,28 +32,37 @@ class VF_SegmentMesh(bpy.types.Operator):
 		countY = bpy.context.scene.vf_segment_mesh_settings.tile_count[1]
 		startX = sizeX * float(countX) * -0.5
 		startY = sizeY * float(countY) * -0.5
-		group = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment == "GROUP" else False
+		group = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment != "POLY" else False
+		vert = True if bpy.context.scene.vf_segment_mesh_settings.tile_segment == "VERT" else False
 		bounds = bpy.context.scene.vf_segment_mesh_settings.tile_bounds
+		attribute_name = "island_position"
 		
 		# Get active object by name (so the source object doesn't change during processing)
-		# This is very silly, I just can't remember how to create a reference to the active object without it changing when the active object changes
+		# This seems VERY silly, I just can't remember how to create a reference to the active object without it changing when the active object changes?
 		object_name = str(bpy.context.active_object.name)
 		mesh_object = bpy.data.objects[object_name]
-		mesh = mesh_object.data
+		mesh_data = mesh_object.data
 		
 		# Calculate island positions if we're not in per-polygon mode
 		if group:
 			# Convert the mesh to a BMesh for easier manipulation
 			bm = bmesh.new()
-			bm.from_mesh(mesh)
+			bm.from_mesh(mesh_data)
 			
 			# Create a custom vector polygon attribute to store the bounding box centers
-			attr = bm.faces.layers.vec.new("BoundingBoxCenter")
+			attr = bm.faces.layers.float_vector.new(attribute_name)
+			
+			# Set vectors to infinity so we can track which elements have been processed
+			unset_value = Vector((float('-inf'), float('-inf'), float('-inf')))
+			for face in bm.faces:
+				face[attr] = unset_value
+				face.select_set(False)
 			
 			# Iterate through polygons to find mesh islands
 			for face in bm.faces:
-				# Check if the BoundingBoxCenter attribute exists on the current polygon
-				if attr in face:
+				# Check if the custom attribute already exists on the current polygon
+				if face[attr] != unset_value:
+#					print("attr exists")
 					# If the attribute exists, skip to the next polygon
 					continue
 				
@@ -78,21 +70,32 @@ class VF_SegmentMesh(bpy.types.Operator):
 				face.select_set(True)
 				
 				# Expand the selection to linked polygons
-				bpy.ops.mesh.select_linked(delimit=set())
+#				bpy.ops.mesh.select_linked(delimit=set())
+				# BUT THIS IS FOR THE ORIGINAL MESH, NOT BMESH!
+				
+				bmesh.ops.region_extend(bm, use_faces=True, use_face_step=False)
 				
 				# Get the selected polygons
 				selected_polygons = [poly for poly in bm.faces if poly.select]
 				
+				print("selected_polygons: " + len(selected_polygons))
+				
+				# Corrected?
+#				selected_polygons = [poly for poly in bpy.context.active_object.data.polygons if poly.select]
+				
+#				print(dir(bm.faces))
+				
 				# Calculate selected mesh island position, either average vertex or bounding box
-				if True:
+				if vert:
 					# Calculate average vertex center
 					vertices = [v.co for poly in selected_polygons for v in poly.verts]
-					bounding_box_center = sum(vertices, mathutils.Vector()) / len(vertices)
+					bounding_box_center = sum(vertices, Vector()) / len(vertices)
 				else:
 					# Calculate bounding box minimmum and maximum extents
-					min_coords = mathutils.Vector((float('inf'), float('inf'), float('inf')))
-					max_coords = mathutils.Vector((-float('inf'), -float('inf'), -float('inf')))
+					min_coords = Vector((float('inf'), float('inf'), float('inf')))
+					max_coords = Vector((-float('inf'), -float('inf'), -float('inf')))
 					for poly in selected_polygons:
+#						print(dir(poly))
 						for vert in poly.verts:
 							min_coords.x = min(min_coords.x, vert.co.x)
 							min_coords.y = min(min_coords.y, vert.co.y)
@@ -107,14 +110,17 @@ class VF_SegmentMesh(bpy.types.Operator):
 				for poly in bm.faces:
 					if poly.select:
 						poly[attr] = bounding_box_center
-						
-			# Clean up the mesh by removing the BoundingBoxCenter attribute
-			# I think ChatGPT lied about this!
-			bm.faces.layers.remove(attr)
 			
 			# Update the mesh with the changes from the BMesh
-			bm.to_mesh(mesh)
+			bm.to_mesh(mesh_data)
 			bm.free()
+		
+#			if attribute_name in mesh_data.polygons.layers.float_vector:
+			if attribute_name in mesh_data.attributes:
+				attribute_layer = mesh_data.attributes[attribute_name]
+			else:
+				attribute_layer = False
+				print("VF Segment Mesh - failed to calculate and store mesh island positions")
 		
 		# Loop through each grid space
 		for x in range(countX):
@@ -143,50 +149,24 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Count how many polygons have been selected
 				count = 0
 				
-				# Create selection
-				if group:
-					# Find connected elements within the specified XYZ area
-					visited_elements = set()
-					for element_index in range(len(mesh.polygons)):
-						if element_index not in visited_elements:
-							# Find connected elements and test if group
-							connected_elements = find_connected_elements(mesh, element_index, visited_elements, min_x, min_y, max_x, max_y)
-							center_of_mass = sum(mesh.polygons[index].center for index in connected_elements) / len(connected_elements)
-							
-							if min_x <= center_of_mass.x <= max_x and min_y <= center_of_mass.y <= max_y:
-								# Separate connected elements into a new object
-								bpy.ops.object.mode_set(mode='EDIT')
-								bpy.ops.mesh.select_all(action='DESELECT')
-								for index in connected_elements:
-									mesh.polygons[index].select = True
-								bpy.ops.mesh.separate(type='SELECTED')
-								bpy.ops.object.mode_set(mode='OBJECT')
-								
-								# Get the separated object and rename it
-								separated_object = bpy.context.view_layer.objects.active
-								separated_object.name = separated_object_name
-								
-								# Rename the separated mesh
-								separated_mesh = separated_object.data
-								separated_mesh.name = separated_mesh_name
-								
-								# Deselect the separated object
-								separated_object.select_set(False)
-				else:
-					# Select polygons within the specified XYZ area
-					for polygon in mesh.polygons:
-						# Find average vertex location (not bounding box or area, just super basic)
-						centroid = Vector((0, 0, 0))
+				# Select polygons within the specified XYZ area
+				for polygon in mesh_data.polygons:
+					if group and attribute_layer:
+						# Get precalculated island position
+						element_position = attribute_layer.data[polygon.index].vector
+					else:
+						# Find average vertex location of individual polygon
+						element_position = Vector((0, 0, 0))
 						for vertice_index in polygon.vertices:
-							centroid += mesh.vertices[vertice_index].co
-						centroid /= len(polygon.vertices)
-						
-						# Check polygon centre against min/max
-						if min_x <= centroid.x <= max_x and min_y <= centroid.y <= max_y:
-							polygon.select = True
-							count += 1
-						else:
-							polygon.select = False
+							element_position += mesh_data.vertices[vertice_index].co
+						element_position /= len(polygon.vertices)
+					
+					# Check element position against min/max
+					if min_x <= element_position.x <= max_x and min_y <= element_position.y <= max_y:
+						polygon.select = True
+						count += 1
+					else:
+						polygon.select = False
 						
 				# Only create a new segment if there are 1 or more polygons selected
 				if count > 0:
@@ -207,27 +187,32 @@ class VF_SegmentMesh(bpy.types.Operator):
 		# Done
 		return {'FINISHED'}
 
+@persistent
 def VF_SegmentMeshPreview(self, context):
+	mesh_name = "VF-SegmentMeshPreview-TEMP"
+#				vf_segment_mesh_preview_temp
+	
 	# Remove existing mesh data block (and associated object) if it exists
 	if mesh_name in bpy.data.meshes:
+#	if bpy.data.meshes.get(mesh_name):
 		mesh = bpy.data.meshes[mesh_name]
 		bpy.data.meshes.remove(mesh)
 		bpy.data.meshes.remove(bpy.data.meshes[mesh_name])
 	
 	# Stop now if the preview mesh is disabled
-	if bpy.context.scene.vf_segment_mesh_settings.show_preview:
+	if not bpy.context.scene.vf_segment_mesh_settings.show_preview:
 		# Done
-		return {'FINISHED'}
+#		return {'FINISHED'}
+		return None
 	
 	# Set up local variables
 	sizeX = bpy.context.scene.vf_segment_mesh_settings.tile_size[0]
 	sizeY = bpy.context.scene.vf_segment_mesh_settings.tile_size[1]
 	countX = bpy.context.scene.vf_segment_mesh_settings.tile_count[0]
 	countY = bpy.context.scene.vf_segment_mesh_settings.tile_count[1]
-	mesh_name = "vf_segment_mesh_preview_temp"
 	
 	# Save the current object selection
-	active_object_name = str(bpy.context.active_object.name)
+	active_object_name = str(bpy.context.active_object.name) if bpy.context.active_object else False
 	selected_objects = [obj for obj in bpy.context.selected_objects]
 	
 	# Create primitive grid
@@ -245,13 +230,20 @@ def VF_SegmentMeshPreview(self, context):
 	bpy.context.active_object.scale = (sizeX * countX, sizeY * countY, 1.0)
 	bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 	
+	# Convert to wireframe and disable for rendering
+	bpy.ops.object.modifier_add(type='WIREFRAME')
+	bpy.context.object.modifiers["Wireframe"].thickness = float(max(sizeX, sizeY)) * 0.05
+#	bpy.ops.object.modifier_apply()
+	bpy.context.object.hide_render = True
+		
 	# Rename object and mesh data block
 	bpy.context.active_object.name = mesh_name
 	bpy.context.active_object.data.name = mesh_name
 	
 	# Reset selection
 	bpy.context.active_object.select_set(False)
-	bpy.context.view_layer.objects.active = bpy.data.objects[active_object_name]
+	if active_object_name:
+		bpy.context.view_layer.objects.active = bpy.data.objects[active_object_name]
 	# If one or more objects were originally selected, restore that selection set
 	if len(selected_objects) >= 1:
 		# Re-select previously selected objects
@@ -259,15 +251,29 @@ def VF_SegmentMeshPreview(self, context):
 			obj.select_set(True)
 	
 	# Done
-	return {'FINISHED'}
+#	return {'FINISHED'}
+	return None
 
 
 ###########################################################################
 # Project settings and UI rendering classes
 
 class vfSegmentMeshSettings(bpy.types.PropertyGroup):
+	tile_size: bpy.props.FloatVectorProperty(
+		name='Tile',
+		description='Size of each X/Y tile',
+		subtype='XYZ_LENGTH',
+		size=2,
+		default=(100.0, 100.0),
+		step=1,
+		precision=2,
+		soft_min=1.0,
+		soft_max=1000.0,
+		min=0.0,
+		max=10000.0,
+		update=VF_SegmentMeshPreview)
 	tile_count: bpy.props.IntVectorProperty(
-		name="Tile Count",
+		name="Count",
 		description="Number of X/Y tiles",
 		subtype="XYZ",
 		size=2,
@@ -276,37 +282,25 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		soft_min=2,
 		soft_max=8,
 		min=1,
-		max=64)
-	tile_size: bpy.props.FloatVectorProperty(
-		name='Tile Size',
-		description='Size of each X/Y tile',
-		subtype='XYZ_LENGTH',
-#		unit='LENGTH',
-		size=2,
-		default=(100.0, 100.0),
-		step=1,
-		precision=2,
-		soft_min=1.0,
-		soft_max=1000.0,
-		min=0.0,
-		max=10000.0)
+		max=64,
+		update=VF_SegmentMeshPreview)
 	tile_segment: bpy.props.EnumProperty(
-		name = 'Segmentation',
+		name = 'Segment',
 		description = 'Segment mesh by individual polygons or connected groups',
 		items = [
-			('POLY', 'Polygon', 'Segment mesh by individual polygons (cuts apart merged elements)'),
-			('POINT', 'Average Vertex', 'Segment mesh by the vertex density of each contiguous polygon island (maintains merged elements)'),
-			('BOX', 'Bounding Box', 'Segment mesh by the bounding box of each contiguous polygon island (maintains merged elements)')
+			('POLY', 'Per Polygon', 'Segment mesh by individual polygons (cuts apart merged elements)'),
+			('VERT', 'Average Vertex', 'Segment mesh based on the vertex density of each contiguous polygon island (maintains merged elements)'),
+			('BOX', 'Bounding Box', 'Segment mesh based on the bounding box of each contiguous polygon island (maintains merged elements)')
 #			('GROUP', 'Group', 'Segment mesh by connected groups (maintains merged elements)')
 			],
 		default = 'POLY')
 	tile_bounds: bpy.props.BoolProperty(
-		name="Outside Bounds",
-		description="Include elements outside the defined grid boundaries",
+		name="Include Edges",
+		description="Include elements outside the defined boundary edges",
 		default=False,
 		update=VF_SegmentMeshPreview)
 	show_preview: bpy.props.BoolProperty(
-		name="Show Preview",
+		name="Preview",
 		description="Enable preview grid mesh",
 		default=False,
 		update=VF_SegmentMeshPreview)
@@ -315,7 +309,7 @@ class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 	bl_space_type = "VIEW_3D"
 	bl_region_type = "UI"
 	bl_category = 'VF Tools'
-	bl_order = 0
+	bl_order = 20
 	bl_options = {'DEFAULT_CLOSED'}
 	bl_label = "Segment Mesh"
 	bl_idname = "VFTOOLS_PT_segment_mesh"
@@ -335,7 +329,7 @@ class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 			# Check if mesh object is selected
 			if context.active_object and context.active_object.type == 'MESH' and len(context.active_object.data.polygons) > 0:
 				button_enable = True
-				button_title = "Create " + str(object_count) + " Segments"
+				button_title = "Create " + str(context.scene.vf_segment_mesh_settings.tile_count[0] * context.scene.vf_segment_mesh_settings.tile_count[1]) + " Segments"
 				button_icon = "MESH_GRID"
 			else:
 				button_enable = False
@@ -345,21 +339,14 @@ class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 			# UI Layout
 			layout = self.layout
 			layout.use_property_decorate = False # No animation
+			layout.use_property_split = True
 			
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_count')
 			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_size')
+			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_count')
 			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_segment')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_segment', expand=True)
 			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_bounds')
 			layout.prop(context.scene.vf_segment_mesh_settings, 'show_preview')
-			
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_count', text = '')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_size', text = '')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_segment', text = '')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_segment', text = '', expand=True)
-			layout.prop(context.scene.vf_segment_mesh_settings, 'tile_bounds', text = '')
-			layout.prop(context.scene.vf_segment_mesh_settings, 'show_preview', text = '')
-			
+						
 			if button_enable:
 				layout.operator(VF_SegmentMesh.bl_idname, text = button_title, icon = button_icon)
 			else:
@@ -371,7 +358,7 @@ class VFTOOLS_PT_segment_mesh(bpy.types.Panel):
 		except Exception as exc:
 			print(str(exc) + " | Error in VF Segment Mesh panel")
 
-classes = (VF_SegmentMesh, VF_SegmentMeshPreview, vfSegmentMeshSettings, VFTOOLS_PT_segment_mesh)
+classes = (VF_SegmentMesh, vfSegmentMeshSettings, VFTOOLS_PT_segment_mesh)
 
 ###########################################################################
 # Addon registration functions
