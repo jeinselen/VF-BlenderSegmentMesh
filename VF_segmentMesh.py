@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 7, 2),
+	"version": (0, 7, 3),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -15,6 +15,7 @@ import bmesh
 from mathutils import Vector
 from mathutils import Matrix
 from bpy.app.handlers import persistent
+import time
 
 ###########################################################################
 # Main class
@@ -38,6 +39,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 	def execute(self, context):
 		# Ensure mode is set to object
 		bpy.ops.object.mode_set(mode='OBJECT')
+		
+		# Start global timer
+		total_time = time.time()
 		
 		# Set up local variables
 		sizeX = context.scene.vf_segment_mesh_settings.tile_size[0]
@@ -71,6 +75,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 		# Track names of each created object
 		separated_collection = []
 		
+		# Start selection timer
+		selecting_time = time.time()
+		
 		# Loop through each grid space
 		for x in range(countX):
 			# Define min/max for X
@@ -80,7 +87,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 			if bounds:
 				if x == 0:
 					min_x = float('-inf')
-				elif x == countY-1:
+				elif x == countX-1:
 					max_x = float('inf')
 			
 			for y in range(countY):
@@ -99,26 +106,31 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Re-get the mesh data to ensure everything is up-to-date
 				mesh_data = mesh_object.data
 				
-#				print("")
-#				print("")
-#				print("Tile: " + str(x) + " x " + str(y))
-#				print("segment: ", segment)
+				print("")
+				print("Tile: " + str(x) + " x " + str(y))
+				print("segment: ", segment)
 				
 				# Get attribute data
 				if segment == "BOX":
-					island_data = mesh_data.attributes['island_box'].data
+#					island_data = mesh_data.attributes['island_box'].data
+					island_name = "island_box"
 				elif segment == "AVERAGE":
-					island_data = mesh_data.attributes['island_poly'].data
+#					island_data = mesh_data.attributes['island_poly'].data
+					island_name = "island_poly"
 				elif segment == "MEDIAN":
-					island_data = mesh_data.attributes['island_median'].data
+#					island_data = mesh_data.attributes['island_median'].data
+					island_name = "island_median"
 				elif segment == "WEIGHTED":
-					island_data = mesh_data.attributes['island_weighted'].data
+#					island_data = mesh_data.attributes['island_weighted'].data
+					island_name = "island_weighted"
 				else:
-					island_data = False
+#					island_data = False
+					island_name = False
 				
 #				print("island_data: ", island_data)
 #				if island_data:
 #					print("island_data count: ", len(island_data))
+				print("island_data: ", island_name)
 				
 				# Create tile name
 				tile_name = mesh_object.name + "-Tile-" + str(x) + "-" + str(y)
@@ -126,12 +138,18 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Count how many polygons have been selected
 				count = 0
 				
+				statusA = 0
+				statusB = 0
+				
 				# Select polygons within the specified XYZ area
 				for polygon in mesh_data.polygons:
-					if group and island_data:
+					if group:
+						statusA += 1
 						# Get precalculated island position
-						element_position = island_data[polygon.index].vector
+#						element_position = island_data[polygon.index].vector
+						element_position = mesh_data.attributes[island_name].data[polygon.index].vector
 					else:
+						statusB += 1
 						# Find average vertex location of individual polygon
 						element_position = Vector((0, 0, 0))
 						for vertice_index in polygon.vertices:
@@ -144,6 +162,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 						count += 1
 					else:
 						polygon.select = False
+				
+				print("Group status: ", statusA)
+				print("Polys status: ", statusB)
 				
 				# Only create a new segment if there are 1 or more polygons selected
 				if count > 0:
@@ -200,6 +221,14 @@ class VF_SegmentMesh(bpy.types.Operator):
 		context.scene.cursor.matrix = original_cursor
 		context.tool_settings.transform_pivot_point = original_pivot
 		
+		
+		# Calculate time spent processing
+		print("")
+		selecting_time = round(time.time() - selecting_time, 2)
+		print("Tiling: "+secondsToReadable(selecting_time))
+		total_time = round(time.time() - total_time, 2)
+		print("Total: "+secondsToReadable(total_time))
+		
 		# Done
 		return {'FINISHED'}
 
@@ -208,6 +237,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 @persistent
 def vf_store_polygon_islands(obj):
 	mesh = obj.data
+	
+	# Start timer
+	processing_time = time.time()
 	
 	# Create a BMesh object from the mesh
 	bm = bmesh.new()
@@ -261,12 +293,20 @@ def vf_store_polygon_islands(obj):
 				current_poly = stack.pop()
 				island_polygons.add(current_poly.index)
 				current_poly.tag = True
+				
 				# Find adjacent polygons by checking neighboring edges
-				for edge in current_poly.edges:
-					for adjacent_poly in edge.link_faces:
-						if not adjacent_poly.tag:
-							stack.append(adjacent_poly)
-							adjacent_poly.tag = True
+#				for edge in current_poly.edges:
+#					for adjacent_poly in edge.link_faces:
+#						if not adjacent_poly.tag:
+#							stack.append(adjacent_poly)
+#							adjacent_poly.tag = True
+				
+				# Find adjacent polygons by checking connected vertices
+				for vert in current_poly.verts:
+					for connected_poly in vert.link_faces:
+						if not connected_poly.tag:
+							stack.append(connected_poly)
+							connected_poly.tag = True
 			
 			# Create island positional data
 			# Get current island bounding box centre point
@@ -301,10 +341,22 @@ def vf_store_polygon_islands(obj):
 			
 			track_index += 1
 	
+	# Reset polygon tags before saving back to the mesh
+	for poly in bm.faces:
+		poly.tag = False
+	
 	# Finish up, write the bmesh back to the mesh
 	bm.to_mesh(mesh)
 	bm.free() # free and prevent further access
 	obj.data.update() # This ensures the viewport updates
+	
+	# Calculate time spent processing islands
+	processing_time = round(time.time() - processing_time, 2)
+	print("")
+	print("Islands: "+secondsToReadable(processing_time))
+	
+	# Done
+	return None
 
 
 
@@ -368,6 +420,33 @@ def vf_segment_mesh_preview(self, context):
 	
 	# Done
 	return None
+
+
+
+###########################################################################
+# Time conversion functions, because datetime doesn't like zero-numbered days or hours over 24
+
+# Converts float seconds into [hour, minute, second] string array, with hours expand indefinitely (will not roll over into days)
+def secondsToStrings(sec):
+	seconds, decimals = divmod(float(sec), 1)
+	minutes, seconds = divmod(seconds, 60)
+	hours, minutes = divmod(minutes, 60)
+	return [
+		"%d" % (hours),
+		"%02d" % (minutes),
+		"%02d.%02d" % (seconds, round(decimals*100))
+	]
+	
+# Converts float seconds into HH:MM:SS.## format, hours expand indefinitely (will not roll over into days)
+def secondsToReadable(seconds):
+	h, m, s = secondsToStrings(seconds)
+	return h + ":" + m + ":" + s
+
+# Converts string of HH:MM:SS.## format into float seconds
+def readableToSeconds(readable):
+	hours, minutes, seconds = readable.split(':')
+	return int(hours)*3600 + int(minutes)*60 + float(seconds)
+
 
 
 ###########################################################################
