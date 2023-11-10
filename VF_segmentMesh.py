@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 7, 0),
+	"version": (0, 7, 2),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -24,6 +24,16 @@ class VF_SegmentMesh(bpy.types.Operator):
 	bl_label = "Segment Mesh"
 	bl_description = "Divide large meshes into grid-based components for more efficient rendering in realtime game engines"
 	bl_options = {'REGISTER', 'UNDO'}
+	
+	def invoke(self, context, event):
+		return context.window_manager.invoke_props_dialog(self)
+	
+	def draw(self, context):
+		try:
+			layout = self.layout
+			layout.label(text="Blender will be unresponsive while processing, proceed?")
+		except Exception as exc:
+			print(str(exc) + ' | Error in VF Segment Mesh: Begin segmentation confirmation')
 	
 	def execute(self, context):
 		# Ensure mode is set to object
@@ -89,15 +99,26 @@ class VF_SegmentMesh(bpy.types.Operator):
 				# Re-get the mesh data to ensure everything is up-to-date
 				mesh_data = mesh_object.data
 				
+#				print("")
+#				print("")
+#				print("Tile: " + str(x) + " x " + str(y))
+#				print("segment: ", segment)
+				
 				# Get attribute data
-				if 'island_box' in mesh_data.attributes:
-					island_box = mesh_data.attributes['island_box']
-				if 'island_poly' in mesh_data.attributes:
-					island_poly = mesh_data.attributes['island_poly']
-#				if 'island_median' in mesh_data.attributes:
-#					island_median = mesh_data.attributes['island_median']
-#				if 'island_weighted' in mesh_data.attributes:
-#					island_weighted = mesh_data.attributes['island_weighted']
+				if segment == "BOX":
+					island_data = mesh_data.attributes['island_box'].data
+				elif segment == "AVERAGE":
+					island_data = mesh_data.attributes['island_poly'].data
+				elif segment == "MEDIAN":
+					island_data = mesh_data.attributes['island_median'].data
+				elif segment == "WEIGHTED":
+					island_data = mesh_data.attributes['island_weighted'].data
+				else:
+					island_data = False
+				
+#				print("island_data: ", island_data)
+#				if island_data:
+#					print("island_data count: ", len(island_data))
 				
 				# Create tile name
 				tile_name = mesh_object.name + "-Tile-" + str(x) + "-" + str(y)
@@ -107,18 +128,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 				
 				# Select polygons within the specified XYZ area
 				for polygon in mesh_data.polygons:
-#					if group and island_box and island_poly and island_median and island_weighted:
-					if group and island_box and island_poly:
+					if group and island_data:
 						# Get precalculated island position
-#						if segment == "WEIGHTED":
-#							element_position = island_weighted.data[polygon.index].vector
-#						elif segment == "MEDIAN":
-#							element_position = island_median.data[polygon.index].vector
-#						elif segment == "AVERAGE":
-						if segment == "AVERAGE":
-							element_position = island_poly.data[polygon.index].vector
-						else: # Default to "BOX"
-							element_position = island_box.data[polygon.index].vector
+						element_position = island_data[polygon.index].vector
 					else:
 						# Find average vertex location of individual polygon
 						element_position = Vector((0, 0, 0))
@@ -219,15 +231,19 @@ def vf_store_polygon_islands(obj):
 	else:
 		island_poly = bm.faces.layers.float_vector.new('island_poly')
 	
-#	if 'island_median' in bm.faces.layers.float_vector:
-#		island_median = bm.faces.layers.float_vector['island_median']
-#	else:
-#		island_median = bm.faces.layers.float_vector.new('island_median')
+	if 'island_median' in bm.faces.layers.float_vector:
+		island_median = bm.faces.layers.float_vector['island_median']
+	else:
+		island_median = bm.faces.layers.float_vector.new('island_median')
+
+	if 'island_weighted' in bm.faces.layers.float_vector:
+		island_weighted = bm.faces.layers.float_vector['island_weighted']
+	else:
+		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
 	
-#	if 'island_weighted' in bm.faces.layers.float_vector:
-#		island_weighted = bm.faces.layers.float_vector['island_weighted']
-#	else:
-#		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
+	# Initialise polygon tags before traversal
+	for poly in bm.faces:
+		poly.tag = False
 	
 	# Track current island index
 	track_index = 0
@@ -250,7 +266,8 @@ def vf_store_polygon_islands(obj):
 					for adjacent_poly in edge.link_faces:
 						if not adjacent_poly.tag:
 							stack.append(adjacent_poly)
-							
+							adjacent_poly.tag = True
+			
 			# Create island positional data
 			# Get current island bounding box centre point
 			position_box_min = Vector((float("inf"), float("inf"), float("inf")))
@@ -269,18 +286,18 @@ def vf_store_polygon_islands(obj):
 			position_poly = sum((f.calc_center_bounds() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
 			
 			# Get current island weighted polygon position average
-#			position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+			position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
 			
 			# Get current island weighted polygon position average
-#			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
+			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
 			
 			# Assign island data to the polygons
 			for island_poly_index in island_polygons:
 				bm.faces[island_poly_index][island_index] = track_index
 				bm.faces[island_poly_index][island_box] = (position_box_max + position_box_min) / 2
 				bm.faces[island_poly_index][island_poly] = position_poly
-#				bm.faces[island_poly_index][island_median] = position_median
-#				bm.faces[island_poly_index][island_weighted] = position_weighted
+				bm.faces[island_poly_index][island_median] = position_median
+				bm.faces[island_poly_index][island_weighted] = position_weighted
 			
 			track_index += 1
 	
