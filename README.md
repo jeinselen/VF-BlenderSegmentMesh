@@ -8,16 +8,15 @@ Divides a mesh (such as OpenStreetMap 3D meshes) into XY grid segments for more 
 - Install and enable the add-on
 - It will show up in the 3D view `VF Tools` tab
 - Select a single mesh object to segment
-- Choose the desired settings and process
-	- **WARNING:** processing is tedious, and some settings (particularly segmenting anything using mesh islands on large data sets) can take a _very_ long time (measured in tens of minutes, not seconds!)
+	- **WARNING:** segmenting large meshes can take a long time (measured in minutes, not seconds!)
 
 ## Settings
 
 - `Size` Sets the `X` and `Y` dimensions of a single tile
 - `Count` Sets the number of tiles in `X` and `Y`
-- `Include` Determines handling of geometry outside of the total area (tile size x tile count)
-	- `Inside Bounds` - Limits each tile to just the elements that fall within the boundaries of that tile
-	- `Outside Edges` - Includes geometry outside the boundaries of the total area in the nearest edge tile
+- `Include` Determines handling of geometry located outside of the total tiled area (tile size × tile count)
+	- `Only Inside` - Limits each tile to just the elements that fall within the boundaries of that tile
+	- `Extend Edges` - Includes geometry outside the boundaries of the total area in the nearest edge tile
 - `Segment` The type of geometry location used to segment meshes between tiles
 	- `Per Polygon` - Divides meshes at the polygon level using the average vertex position
 		- This is particularly helpful for large objects that span multiple tiles (which would otherwise defeat the purpose of viewpoint culling)
@@ -36,5 +35,5 @@ Divides a mesh (such as OpenStreetMap 3D meshes) into XY grid segments for more 
 
 ## Notes
 
-- This is insanely slow on larger meshes; all of the mesh island data collection is being done in a BMesh, and it's an absolute _performance disaster_
+- Geometry Nodes are used to store island location information as face attributes. Any other modifiers on the source mesh will _not_ be applied during this process; the base mesh is what will be segmented, and any modifiers will still be present for each of the segments.
 - This software is provided without guarantee of usability or safety, use at your own risk

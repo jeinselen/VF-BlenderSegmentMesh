@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 8, 0),
+	"version": (0, 8, 2),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -36,9 +36,6 @@ class VF_SegmentMesh(bpy.types.Operator):
 			print(str(exc) + ' | Error in VF Segment Mesh: Begin segmentation confirmation')
 	
 	def execute(self, context):
-		# Ensure mode is set to object
-		bpy.ops.object.mode_set(mode='OBJECT')
-		
 		# Set up local variables
 		sizeX = context.scene.vf_segment_mesh_settings.tile_size[0]
 		sizeY = context.scene.vf_segment_mesh_settings.tile_size[1]
@@ -51,21 +48,23 @@ class VF_SegmentMesh(bpy.types.Operator):
 		bounds = True if context.scene.vf_segment_mesh_settings.tile_bounds == "OUT" else False
 		attribute_name = "island_position"
 		
-		# Apply all transforms (otherwise world-space calculations are going to be all off)
-		bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-		
 		# Get active object by name instead of by active reference (so the source object doesn't change during processing)
 		object_name = str(context.active_object.name)
 		mesh_object = bpy.data.objects[object_name]
 		
-		# Calculate island positions if we're not in per-polygon mode
+		# Deselect all
+		bpy.ops.object.mode_set(mode='EDIT')
+		bpy.ops.mesh.select_all(action='DESELECT')
+		bpy.ops.object.mode_set(mode='OBJECT')
+		
+		# Apply all transforms (otherwise world-space calculations are going to be all off)
+		bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+		
+		# May need to apply all modifiers if significant changes are made to the geometry via modifiers
+#		bpy.ops.object.apply_all_modifiers()
+		
+		# Calculate island positions using Geometry Nodes (more than hundreds of times faster than manual BMesh calculation)
 		if segment != "POLY":
-			# BMesh approach (impossibly slow on geometry over a few hundred thousand polygons)
-#			obj = context.active_object
-#			if obj and obj.type == 'MESH':
-				# Call the function to mark polygon islands
-#				vf_store_polygon_islands(obj)
-			# Geometry Nodes approach (doesn't support bounding box calculation, but it works)
 			mod = mesh_object.modifiers.new(name="VF-StoreIslandAttributes-TEMP", type='NODES')
 			mod.node_group = store_island_attributes_node_group()
 			bpy.ops.object.modifier_apply(modifier="VF-StoreIslandAttributes-TEMP")
@@ -103,6 +102,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 				
 				# Prevent out-of-range errors (seems like the attribute indices aren't updated after splitting geometry)
 				mesh_object.data.update()
+				
 				# Re-get the mesh data to ensure everything is up-to-date
 				mesh_data = mesh_object.data
 				
@@ -136,8 +136,6 @@ class VF_SegmentMesh(bpy.types.Operator):
 					if min_x <= element_position.x <= max_x and min_y <= element_position.y <= max_y:
 						polygon.select = True
 						count += 1
-					else:
-						polygon.select = False
 				
 				# Only create a new segment if there are 1 or more polygons selected
 				if count > 0:
@@ -186,7 +184,7 @@ class VF_SegmentMesh(bpy.types.Operator):
 		# If no elements remain in the original source, remove it and set the first tile to active
 		if len(mesh_object.data.vertices) == 0:
 			bpy.data.meshes.remove(mesh_object.data)
-			bpy.context.view_layer.objects.active = bpy.data.objects[separated_collection[0]]
+			context.view_layer.objects.active = bpy.data.objects[separated_collection[0]]
 		
 		# Restore original 3D cursor position and pivot point
 		context.scene.cursor.matrix = original_cursor
@@ -424,124 +422,6 @@ def store_island_attributes_node_group():
 
 
 @persistent
-def vf_store_polygon_islands(obj):
-	mesh = obj.data
-	
-	# Create a BMesh object from the mesh
-	bm = bmesh.new()
-	bm.from_mesh(mesh)
-	bm.faces.ensure_lookup_table()
-	bm.verts.ensure_lookup_table()
-	
-	# Get or create custom face attributes
-	if 'island_index' in bm.faces.layers.int:
-		island_index = bm.faces.layers.int['island_index']
-	else:
-		island_index = bm.faces.layers.int.new('island_index')
-	
-	if 'island_box' in bm.faces.layers.float_vector:
-		island_box = bm.faces.layers.float_vector['island_box']
-	else:
-		island_box = bm.faces.layers.float_vector.new('island_box')
-	
-	if 'island_poly' in bm.faces.layers.float_vector:
-		island_poly = bm.faces.layers.float_vector['island_poly']
-	else:
-		island_poly = bm.faces.layers.float_vector.new('island_poly')
-	
-	if 'island_median' in bm.faces.layers.float_vector:
-		island_median = bm.faces.layers.float_vector['island_median']
-	else:
-		island_median = bm.faces.layers.float_vector.new('island_median')
-
-	if 'island_weighted' in bm.faces.layers.float_vector:
-		island_weighted = bm.faces.layers.float_vector['island_weighted']
-	else:
-		island_weighted = bm.faces.layers.float_vector.new('island_weighted')
-	
-	# Initialise polygon tags before traversal
-	for poly in bm.faces:
-		poly.tag = False
-	
-	# Track current island index
-	track_index = 0
-	
-	# Iterate through all polygons in the BMesh
-	for poly in bm.faces:
-		if not poly.tag:
-			# Start a new island
-			island_polygons = set()
-			island_vertices = set()
-			stack = [poly]
-			
-			# Perform depth-first search to find connected polygons
-			while stack:
-				current_poly = stack.pop()
-				island_polygons.add(current_poly.index)
-				current_poly.tag = True
-				
-				# Find adjacent polygons by checking neighboring edges
-#				for edge in current_poly.edges:
-#					for adjacent_poly in edge.link_faces:
-#						if not adjacent_poly.tag:
-#							stack.append(adjacent_poly)
-#							adjacent_poly.tag = True
-				
-				# Find adjacent polygons by checking connected vertices
-				for vert in current_poly.verts:
-					for connected_poly in vert.link_faces:
-						if not connected_poly.tag:
-							stack.append(connected_poly)
-							connected_poly.tag = True
-			
-			# Create island positional data
-			# Get current island bounding box centre point
-			position_box_min = Vector((float("inf"), float("inf"), float("inf")))
-			position_box_max = Vector((float("-inf"), float("-inf"), float("-inf")))
-			for p in island_polygons:
-				for v in bm.faces[p].verts:
-					vertex_position = bm.verts[v.index].co
-					position_box_min.x = min(position_box_min.x, vertex_position.x)
-					position_box_min.y = min(position_box_min.y, vertex_position.y)
-					position_box_min.z = min(position_box_min.z, vertex_position.z)
-					position_box_max.x = max(position_box_max.x, vertex_position.x)
-					position_box_max.y = max(position_box_max.y, vertex_position.y)
-					position_box_max.z = max(position_box_max.z, vertex_position.z)
-			
-			# Get current island weighted polygon position average
-			position_poly = sum((f.calc_center_bounds() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
-			
-			# Get current island weighted polygon position average
-			position_median = sum((f.calc_center_median() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
-			
-			# Get current island weighted polygon position average
-			position_weighted = sum((f.calc_center_median_weighted() for f in bm.faces if f.index in island_polygons), Vector())/(len(island_polygons))
-			
-			# Assign island data to the polygons
-			for island_poly_index in island_polygons:
-				bm.faces[island_poly_index][island_index] = track_index
-				bm.faces[island_poly_index][island_box] = (position_box_max + position_box_min) / 2
-				bm.faces[island_poly_index][island_poly] = position_poly
-				bm.faces[island_poly_index][island_median] = position_median
-				bm.faces[island_poly_index][island_weighted] = position_weighted
-			
-			track_index += 1
-	
-	# Reset polygon tags before saving back to the mesh
-	for poly in bm.faces:
-		poly.tag = False
-	
-	# Finish up, write the bmesh back to the mesh
-	bm.to_mesh(mesh)
-	bm.free() # free and prevent further access
-	obj.data.update() # This ensures the viewport updates
-		
-	# Done
-	return None
-
-
-
-@persistent
 def vf_segment_mesh_preview(self, context):
 	mesh_name = "VF-SegmentMeshPreview-TEMP"
 	
@@ -656,6 +536,7 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		items = [
 			# Source is a bit of a problem, since we need to apply all transforms before processing world-space tiles; the original orientation of the object needs to be saved first, which isn't implemented yet
 #			('SOURCE', 'Source', 'Maintains the origin from the source object (not ideal in cases where culling algorithms take origin into account)'),
+			('ZERO', 'Zero', 'Leave each tile origin at the local zero point (not ideal in cases where culling algorithms take origin into account)'),
 			('TILE', 'Tile', 'Set each tile origin to the centre of the tile space (best for predictable placement but may not be as ideal for transparency sorting in some cases)'),
 			('BOX', 'Bounding Box', 'Set each tile origin to the geometry bounding box'),
 			('MEDIAN', 'Median', 'Set each tile origin to the geometry median'),
