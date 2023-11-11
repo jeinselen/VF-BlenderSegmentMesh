@@ -1,6 +1,8 @@
 # VF-BlenderSegmentMesh
 Divides a mesh (such as OpenStreetMap 3D meshes) into XY grid segments for more efficient view culling in realtime rendering engines like Unity, Unreal Engine, and Godot.
 
+![screenshot of the Blender 3D view interface with the add-on installed, showing a single tile of OSD building data selected](images/banner.jpg)
+
 ## Installation and Usage
 
 - Download [VF_segmentMesh.py](https://raw.githubusercontent.com/jeinselen/VF-BlenderSegmentMesh/main/VF_segmentMesh.py)
