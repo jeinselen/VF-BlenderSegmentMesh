@@ -1,7 +1,7 @@
 bl_info = {
 	"name": "VF Segment Mesh",
 	"author": "John Einselen - Vectorform LLC",
-	"version": (0, 7, 5),
+	"version": (0, 8, 0),
 	"blender": (3, 6, 0),
 	"location": "Scene > VF Tools > Segment Mesh",
 	"description": "Divide meshes into grid based segments",
@@ -60,10 +60,16 @@ class VF_SegmentMesh(bpy.types.Operator):
 		
 		# Calculate island positions if we're not in per-polygon mode
 		if segment != "POLY":
-			obj = context.active_object
-			if obj and obj.type == 'MESH':
+			# BMesh approach (impossibly slow on geometry over a few hundred thousand polygons)
+#			obj = context.active_object
+#			if obj and obj.type == 'MESH':
 				# Call the function to mark polygon islands
-				vf_store_polygon_islands(obj)
+#				vf_store_polygon_islands(obj)
+			# Geometry Nodes approach (doesn't support bounding box calculation, but it works)
+			mod = mesh_object.modifiers.new(name="VF-StoreIslandAttributes-TEMP", type='NODES')
+			mod.node_group = store_island_attributes_node_group()
+			bpy.ops.object.modifier_apply(modifier="VF-StoreIslandAttributes-TEMP")
+			bpy.data.node_groups.remove(bpy.data.node_groups["VF-StoreIslandAttributes-TEMP"])
 		
 		# Save current 3D cursor location and pivot point
 		original_cursor = context.scene.cursor.matrix
@@ -101,16 +107,12 @@ class VF_SegmentMesh(bpy.types.Operator):
 				mesh_data = mesh_object.data
 				
 				# Get attribute data if needed
-				if segment == "BOX":
-					island_name = "island_box"
-				elif segment == "AVERAGE":
-					island_name = "island_poly"
-				elif segment == "MEDIAN":
-					island_name = "island_median"
+				if segment == "AVERAGE":
+					island_info = "island_mean"
 				elif segment == "WEIGHTED":
-					island_name = "island_weighted"
+					island_info = "island_weighted"
 				else:
-					island_name = False
+					island_info = False
 				
 				# Create tile name
 				tile_name = mesh_object.name + "-Tile-" + str(x) + "-" + str(y)
@@ -120,9 +122,9 @@ class VF_SegmentMesh(bpy.types.Operator):
 				
 				# Select polygons within the specified XYZ area
 				for polygon in mesh_data.polygons:
-					if island_name:
+					if island_info:
 						# Get precalculated island position
-						element_position = mesh_data.attributes[island_name].data[polygon.index].vector
+						element_position = mesh_data.attributes[island_info].data[polygon.index].vector
 					else:
 						# Find average vertex location of individual polygon
 						element_position = Vector((0, 0, 0))
@@ -192,6 +194,232 @@ class VF_SegmentMesh(bpy.types.Operator):
 		
 		# Done
 		return {'FINISHED'}
+
+
+
+# Many thanks to Brendan Parmer for making this easy https://github.com/BrendanParmer/NodeToPython
+@persistent
+def store_island_attributes_node_group():
+	store_island_attributes= bpy.data.node_groups.new(type = 'GeometryNodeTree', name = "VF-StoreIslandAttributes-TEMP")
+	
+	#initialize store_island_attributes nodes
+	#store_island_attributes outputs
+	#output Geometry
+	store_island_attributes.outputs.new('NodeSocketGeometry', "Geometry")
+	store_island_attributes.outputs[0].attribute_domain = 'POINT'
+	
+	
+	#node Group Output
+	group_output = store_island_attributes.nodes.new("NodeGroupOutput")
+	
+	#store_island_attributes inputs
+	#input Geometry
+	store_island_attributes.inputs.new('NodeSocketGeometry', "Geometry")
+	store_island_attributes.inputs[0].attribute_domain = 'POINT'
+	
+	
+	#node Group Input
+	group_input = store_island_attributes.nodes.new("NodeGroupInput")
+	
+	#node Mesh Island
+	mesh_island = store_island_attributes.nodes.new("GeometryNodeInputMeshIsland")
+	
+	#node Position
+	position = store_island_attributes.nodes.new("GeometryNodeInputPosition")
+	
+	#node Face Area
+	face_area = store_island_attributes.nodes.new("GeometryNodeInputMeshFaceArea")
+	
+	#node Accumulate Field
+	accumulate_field = store_island_attributes.nodes.new("GeometryNodeAccumulateField")
+	accumulate_field.data_type = 'FLOAT_VECTOR'
+	accumulate_field.domain = 'POINT'
+	#Value Float
+	accumulate_field.inputs[1].default_value = 1.0
+	#Value Int
+	accumulate_field.inputs[2].default_value = 1
+	
+	#node Accumulate Field.001
+	accumulate_field_001 = store_island_attributes.nodes.new("GeometryNodeAccumulateField")
+	accumulate_field_001.data_type = 'INT'
+	accumulate_field_001.domain = 'POINT'
+	#Value Vector
+	accumulate_field_001.inputs[0].default_value = (1.0, 1.0, 1.0)
+	#Value Float
+	accumulate_field_001.inputs[1].default_value = 1.0
+	#Value Int
+	accumulate_field_001.inputs[2].default_value = 1
+	
+	#node Accumulate Field.002
+	accumulate_field_002 = store_island_attributes.nodes.new("GeometryNodeAccumulateField")
+	accumulate_field_002.data_type = 'FLOAT_VECTOR'
+	accumulate_field_002.domain = 'FACE'
+	#Value Float
+	accumulate_field_002.inputs[1].default_value = 1.0
+	#Value Int
+	accumulate_field_002.inputs[2].default_value = 1
+	
+	#node Accumulate Field.003
+	accumulate_field_003 = store_island_attributes.nodes.new("GeometryNodeAccumulateField")
+	accumulate_field_003.data_type = 'FLOAT'
+	accumulate_field_003.domain = 'FACE'
+	#Value Vector
+	accumulate_field_003.inputs[0].default_value = (1.0, 1.0, 1.0)
+	#Value Int
+	accumulate_field_003.inputs[2].default_value = 1
+	
+	#node Vector Math
+	vector_math = store_island_attributes.nodes.new("ShaderNodeVectorMath")
+	vector_math.operation = 'DIVIDE'
+	#Vector_002
+	vector_math.inputs[2].default_value = (0.0, 0.0, 0.0)
+	#Scale
+	vector_math.inputs[3].default_value = 1.0
+	
+	#node Vector Math.001
+	vector_math_001 = store_island_attributes.nodes.new("ShaderNodeVectorMath")
+	vector_math_001.operation = 'SCALE'
+	#Vector_001
+	vector_math_001.inputs[1].default_value = (0.0, 0.0, 0.0)
+	#Vector_002
+	vector_math_001.inputs[2].default_value = (0.0, 0.0, 0.0)
+	
+	#node Vector Math.002
+	vector_math_002 = store_island_attributes.nodes.new("ShaderNodeVectorMath")
+	vector_math_002.operation = 'DIVIDE'
+	#Vector_002
+	vector_math_002.inputs[2].default_value = (0.0, 0.0, 0.0)
+	#Scale
+	vector_math_002.inputs[3].default_value = 1.0
+	
+	#node Store Named Attribute
+	store_named_attribute = store_island_attributes.nodes.new("GeometryNodeStoreNamedAttribute")
+	store_named_attribute.data_type = 'INT'
+	store_named_attribute.domain = 'FACE'
+	#Selection
+	store_named_attribute.inputs[1].default_value = True
+	#Name
+	store_named_attribute.inputs[2].default_value = "island_index"
+	#Value_Vector
+	store_named_attribute.inputs[3].default_value = (0.0, 0.0, 0.0)
+	#Value_Float
+	store_named_attribute.inputs[4].default_value = 0.0
+	#Value_Color
+	store_named_attribute.inputs[5].default_value = (0.0, 0.0, 0.0, 0.0)
+	#Value_Bool
+	store_named_attribute.inputs[6].default_value = False
+	
+	#node Store Named Attribute.002
+	store_named_attribute_002 = store_island_attributes.nodes.new("GeometryNodeStoreNamedAttribute")
+	store_named_attribute_002.data_type = 'FLOAT_VECTOR'
+	store_named_attribute_002.domain = 'FACE'
+	#Selection
+	store_named_attribute_002.inputs[1].default_value = True
+	#Name
+	store_named_attribute_002.inputs[2].default_value = "island_mean"
+	#Value_Float
+	store_named_attribute_002.inputs[4].default_value = 0.0
+	#Value_Color
+	store_named_attribute_002.inputs[5].default_value = (0.0, 0.0, 0.0, 0.0)
+	#Value_Bool
+	store_named_attribute_002.inputs[6].default_value = False
+	#Value_Int
+	store_named_attribute_002.inputs[7].default_value = 0
+	
+	#node Store Named Attribute.003
+	store_named_attribute_003 = store_island_attributes.nodes.new("GeometryNodeStoreNamedAttribute")
+	store_named_attribute_003.data_type = 'FLOAT_VECTOR'
+	store_named_attribute_003.domain = 'FACE'
+	#Selection
+	store_named_attribute_003.inputs[1].default_value = True
+	#Name
+	store_named_attribute_003.inputs[2].default_value = "island_weighted"
+	#Value_Float
+	store_named_attribute_003.inputs[4].default_value = 0.0
+	#Value_Color
+	store_named_attribute_003.inputs[5].default_value = (0.0, 0.0, 0.0, 0.0)
+	#Value_Bool
+	store_named_attribute_003.inputs[6].default_value = False
+	#Value_Int
+	store_named_attribute_003.inputs[7].default_value = 0
+	
+	
+	#Set locations
+	group_output.location = (0.0, 0.0)
+	group_input.location = (-720.0, 0.0)
+	mesh_island.location = (-720.0, -100.0)
+	position.location = (-900.0, -220.0)
+	face_area.location = (-1080.0, -720.0)
+	accumulate_field.location = (-720.0, -220.0)
+	accumulate_field_001.location = (-720.0, -440.0)
+	accumulate_field_002.location = (-720.0, -660.0)
+	accumulate_field_003.location = (-720.0, -880.0)
+	vector_math.location = (-540.0, -220.0)
+	vector_math_001.location = (-900.0, -660.0)
+	vector_math_002.location = (-540.0, -660.0)
+	store_named_attribute.location = (-540.0, 0.0)
+	store_named_attribute_002.location = (-360.0, 0.0)
+	store_named_attribute_003.location = (-180.0, 0.0)
+	
+	#Set dimensions
+	group_output.width, group_output.height = 140.0, 100.0
+	group_input.width, group_input.height = 140.0, 100.0
+	mesh_island.width, mesh_island.height = 140.0, 100.0
+	position.width, position.height = 140.0, 100.0
+	face_area.width, face_area.height = 140.0, 100.0
+	accumulate_field.width, accumulate_field.height = 140.0, 100.0
+	accumulate_field_001.width, accumulate_field_001.height = 140.0, 100.0
+	accumulate_field_002.width, accumulate_field_002.height = 140.0, 100.0
+	accumulate_field_003.width, accumulate_field_003.height = 140.0, 100.0
+	vector_math.width, vector_math.height = 140.0, 100.0
+	vector_math_001.width, vector_math_001.height = 140.0, 100.0
+	vector_math_002.width, vector_math_002.height = 140.0, 100.0
+	store_named_attribute.width, store_named_attribute.height = 140.0, 100.0
+	store_named_attribute_002.width, store_named_attribute_002.height = 140.0, 100.0
+	store_named_attribute_003.width, store_named_attribute_003.height = 140.0, 100.0
+	
+	#initialize store_island_attributes links
+	#store_named_attribute_003.Geometry -> group_output.Geometry
+	store_island_attributes.links.new(store_named_attribute_003.outputs[0], group_output.inputs[0])
+	#face_area.Area -> accumulate_field_003.Value
+	store_island_attributes.links.new(face_area.outputs[0], accumulate_field_003.inputs[1])
+	#vector_math_001.Vector -> accumulate_field_002.Value
+	store_island_attributes.links.new(vector_math_001.outputs[0], accumulate_field_002.inputs[0])
+	#accumulate_field_002.Total -> vector_math_002.Vector
+	store_island_attributes.links.new(accumulate_field_002.outputs[6], vector_math_002.inputs[0])
+	#accumulate_field_003.Total -> vector_math_002.Vector
+	store_island_attributes.links.new(accumulate_field_003.outputs[7], vector_math_002.inputs[1])
+	#accumulate_field.Total -> vector_math.Vector
+	store_island_attributes.links.new(accumulate_field.outputs[6], vector_math.inputs[0])
+	#accumulate_field_001.Total -> vector_math.Vector
+	store_island_attributes.links.new(accumulate_field_001.outputs[8], vector_math.inputs[1])
+	#face_area.Area -> vector_math_001.Scale
+	store_island_attributes.links.new(face_area.outputs[0], vector_math_001.inputs[3])
+	#position.Position -> accumulate_field.Value
+	store_island_attributes.links.new(position.outputs[0], accumulate_field.inputs[0])
+	#group_input.Geometry -> store_named_attribute.Geometry
+	store_island_attributes.links.new(group_input.outputs[0], store_named_attribute.inputs[0])
+	#store_named_attribute.Geometry -> store_named_attribute_002.Geometry
+	store_island_attributes.links.new(store_named_attribute.outputs[0], store_named_attribute_002.inputs[0])
+	#store_named_attribute_002.Geometry -> store_named_attribute_003.Geometry
+	store_island_attributes.links.new(store_named_attribute_002.outputs[0], store_named_attribute_003.inputs[0])
+	#mesh_island.Island Index -> store_named_attribute.Value
+	store_island_attributes.links.new(mesh_island.outputs[0], store_named_attribute.inputs[7])
+	#vector_math.Vector -> store_named_attribute_002.Value
+	store_island_attributes.links.new(vector_math.outputs[0], store_named_attribute_002.inputs[3])
+	#vector_math_002.Vector -> store_named_attribute_003.Value
+	store_island_attributes.links.new(vector_math_002.outputs[0], store_named_attribute_003.inputs[3])
+	#mesh_island.Island Index -> accumulate_field.Group ID
+	store_island_attributes.links.new(mesh_island.outputs[0], accumulate_field.inputs[3])
+	#mesh_island.Island Index -> accumulate_field_001.Group ID
+	store_island_attributes.links.new(mesh_island.outputs[0], accumulate_field_001.inputs[3])
+	#mesh_island.Island Index -> accumulate_field_002.Group ID
+	store_island_attributes.links.new(mesh_island.outputs[0], accumulate_field_002.inputs[3])
+	#mesh_island.Island Index -> accumulate_field_003.Group ID
+	store_island_attributes.links.new(mesh_island.outputs[0], accumulate_field_003.inputs[3])
+	#position.Position -> vector_math_001.Vector
+	store_island_attributes.links.new(position.outputs[0], vector_math_001.inputs[0])
+	return store_island_attributes
 
 
 
@@ -407,23 +635,21 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		update=vf_segment_mesh_preview)
 	tile_bounds: bpy.props.EnumProperty(
 		name = 'Include',
-		description = 'Choose if geometry outside the grid area will be included in the nearest tile or not',
+		description = 'Specify if geometry outside the tile area will be included in the nearest tile or not',
 		items = [
-			('IN', 'Inside Bounds', 'Limits tile content to only the elements that fall within the tile boundary'),
-			('OUT', 'Outside Edges', 'Includes content beyond the edges of the tile array, ensuring nothing is left out')
+			('IN', 'Only Inside', 'Limits tile content to only the elements that fall within each tile boundary'),
+			('OUT', 'Extend Edges', 'Includes content beyond the edges of the tile array, ensuring nothing is left out')
 			],
 		default = 'OUT')
 	tile_segment: bpy.props.EnumProperty(
 		name = 'Segment',
-		description = 'Segment mesh by individual polygons or connected groups',
+		description = 'Segment mesh by individual polygons or connected mesh islands',
 		items = [
 			('POLY', 'Per Polygon', 'Segment mesh by individual polygons (cuts apart merged elements)'),
-			('BOX', 'Bounding Box', 'Segment mesh based on the bounding box of each contiguous polygon island (maintains merged elements)'),
-			('AVERAGE', 'Average Polygon', 'Segment mesh based on the average median polygon position of each contiguous island (maintains merged elements)')
-#			('MEDIAN', 'Average Median', 'Segment mesh based on the average median polygon position of each contiguous island (maintains merged elements)'),
-#			('WEIGHTED', 'Average Weighted Median', 'Segment mesh based on the average weighted median polygon position of each contiguous island (maintains merged elements)')
+			('AVERAGE', 'Island Average', 'Segment mesh based on the average vertex positions of each contiguous island (maintains merged elements)'),
+			('WEIGHTED', 'Island Weighted', 'Segment mesh based on the weighted polygon positions of each contiguous island (maintains merged elements)')
 			],
-		default = 'POLY')
+		default = 'WEIGHTED')
 	tile_origin: bpy.props.EnumProperty(
 		name = 'Origin',
 		description = 'Choose the desired origin for each tile',

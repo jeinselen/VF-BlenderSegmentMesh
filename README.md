@@ -13,7 +13,7 @@ Divides a mesh (such as OpenStreetMap 3D meshes) into XY grid segments for more 
 
 ## Settings
 
-- `Tile` Sets the `X` and `Y` dimensions of a single tile
+- `Size` Sets the `X` and `Y` dimensions of a single tile
 - `Count` Sets the number of tiles in `X` and `Y`
 - `Include` Determines handling of geometry outside of the total area (tile size x tile count)
 	- `Inside Bounds` - Limits each tile to just the elements that fall within the boundaries of that tile
@@ -21,10 +21,8 @@ Divides a mesh (such as OpenStreetMap 3D meshes) into XY grid segments for more 
 - `Segment` The type of geometry location used to segment meshes between tiles
 	- `Per Polygon` - Divides meshes at the polygon level using the average vertex position
 		- This is particularly helpful for large objects that span multiple tiles (which would otherwise defeat the purpose of viewpoint culling)
-	- `Bounding Box` - Iterates over every polygon to find connected mesh islands and uses the bounding box to determine if the group falls within the tile boundary
-		- This works well for mesh elements that are more uniform in density
-	- `Average Polygon` - Iterates over every polygon to find connected mesh islands and uses the average polygon location to determine if the group falls within the tile boundary
-		- This may help better segment mesh elements that are non-uniform in density (such as long spikes of geometry connected to a larger primary mass of mesh detail)
+	- `Island Average` - Iterates over every polygon to find connected mesh islands and uses the average vertex locations to determine if the group falls within the tile boundary
+	- `Island Weighted` - Iterates over every polygon to find connected mesh islands and uses the average of weighted polygon locations to determine if the group falls within the tile boundary
 - `Origin` Sets the origin type for the final tile objects
 	- `Tile` - The centre point of each tile range
 		- This can be ideal for predictable tile placement, but if the segmented geometry is entirely in one corner, may not be suitable for transparency sorting in some situations
