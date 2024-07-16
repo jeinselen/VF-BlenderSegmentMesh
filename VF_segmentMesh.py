@@ -534,8 +534,6 @@ class vfSegmentMeshSettings(bpy.types.PropertyGroup):
 		name = 'Origin',
 		description = 'Choose the desired origin for each tile',
 		items = [
-			# Source is a bit of a problem, since we need to apply all transforms before processing world-space tiles; the original orientation of the object needs to be saved first, which isn't implemented yet
-#			('SOURCE', 'Source', 'Maintains the origin from the source object (not ideal in cases where culling algorithms take origin into account)'),
 			('ZERO', 'Zero', 'Leave each tile origin at the local zero point (not ideal in cases where culling algorithms take origin into account)'),
 			('TILE', 'Tile', 'Set each tile origin to the centre of the tile space (best for predictable placement but may not be as ideal for transparency sorting in some cases)'),
 			('BOX', 'Bounding Box', 'Set each tile origin to the geometry bounding box'),
